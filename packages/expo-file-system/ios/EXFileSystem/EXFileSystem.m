@@ -44,6 +44,7 @@ NSString * const EXDownloadProgressEventName = @"Exponent.downloadProgress";
 
 @interface EXFileSystem ()
 
+@property (nonatomic, strong) NSMutableDictionary<NSString *, id <NSURLSessionTaskDelegate>> *sessionTasks;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, EXDownloadResumable*> *downloadObjects;
 @property (nonatomic, weak) UMModuleRegistry *moduleRegistry;
 @property (nonatomic, weak) id<UMEventEmitterService> eventEmitter;
@@ -556,35 +557,53 @@ UM_EXPORT_METHOD_AS(downloadAsync,
            nil);
     return;
   }
-  NSString *path = localUri.path;
+  
+  NSString *uuid = [[NSUUID UUID] UUIDString];
 
-  NSURLSession *session = [self _createSessionWithHeaders:options[@"headers"]];
-
-  NSURLSessionDownloadTask *task = [session downloadTaskWithURL:url completionHandler:^(NSURL * _Nullable location, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+  UM_WEAKIFY(self);
+  EXDownloadDelegateOnDownloadCallback onDownload = ^(NSURLSessionDownloadTask *task, NSURL *location) {
+    UM_ENSURE_STRONGIFY(self);
+    NSError *error;
+    [[NSFileManager defaultManager] moveItemAtURL:location toURL:localUri error:&error];
     if (error) {
-      reject(@"E_DOWNLOAD_FAILED",
-             [NSString stringWithFormat:@"Could not download from '%@'.", url],
+      reject(@"E_UNABLE_TO_SAVE",
+             [NSString stringWithFormat:@"Unable to save file to local URI. '%@'", error.description],
              error);
       return;
     }
-    
-    [[NSFileManager defaultManager] moveItemAtPath:location.path toPath:path error:&error];
-    if (error) {
-      reject(@"E_MOVED_FAILED",
-             [NSString stringWithFormat:@"Could not move the downloaded file from '%@' to '%@'.", location.path, path],
-             error);
-      return;
-    }
-    
-    
-    NSMutableDictionary *result = [self _parseServerResponse:response];
-    result[@"uri"] = [NSURL fileURLWithPath:path].absoluteString;
+    NSMutableDictionary *result = [self _parseServerResponse:task.response];
+    result[@"uri"] = localUri.absoluteString;
     if (options[@"md5"]) {
-      NSData* data = [NSData dataWithContentsOfFile:path];
+      NSData *data = [NSData dataWithContentsOfURL:localUri];
       result[@"md5"] = [data md5String];
     }
+  
+    [self.sessionTasks removeObjectForKey:uuid];
     resolve(result);
-  }];
+  };
+  
+  EXDownloadDelegateOnErrorCallback onError = ^(NSError *error) {
+    UM_ENSURE_STRONGIFY(self);
+    //"cancelled" description when paused.  Don't throw.
+    if ([error.localizedDescription isEqualToString:@"cancelled"]) {
+      [self.sessionTasks removeObjectForKey:uuid];
+      resolve([NSNull null]);
+    } else {
+      reject(@"E_UNABLE_TO_DOWNLOAD",
+             [NSString stringWithFormat:@"Unable to download from: %@. '%@", url.absoluteString, error.description],
+             error);
+    }
+  };
+  
+  
+  EXDownloadDelegate *downloadDelegate = [[EXDownloadDelegate alloc] initWithId:uuid
+                                                                        onWrite:nil
+                                                                     onDownload:onDownload
+                                                                        onError:onError];
+  self.sessionTasks[uuid] = downloadDelegate;
+  
+  NSURLSession *session = [self _createBackgroundSession:uuid withDelegate:downloadDelegate withHeaders:options[@"headers"]];
+  NSURLSessionDownloadTask *task = [session downloadTaskWithURL:url];
   
   [task resume];
 }
@@ -617,13 +636,13 @@ UM_EXPORT_METHOD_AS(uploadAsync,
   NSURLSessionUploadTask *task = [session uploadTaskWithRequest:urlRequest fromFile:fileUri completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
     if (error) {
       reject(@"E_UPLOADED_FILE",
-             [NSString stringWithFormat:@"Could not upload '%@' to '%@'.", fileUri, urlRequest.URL],
+             [NSString stringWithFormat:@"Could not upload '%@' to '%@'. '%@'", fileUri, urlRequest.URL, error.description],
              error);
       return;
     }
     
     NSMutableDictionary *result = [self _parseServerResponse:response];
-    result[@"body"] = [[NSString alloc] initWithData:data encoding:[self _importBodyEncoding:options[@"bodyEncoding"]]];
+    result[@"body"] = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     
     resolve(result);
   }];
@@ -718,42 +737,23 @@ UM_EXPORT_METHOD_AS(getTotalDiskCapacityAsync, getTotalDiskCapacityAsyncWithReso
 
 #pragma mark - Internal methods
 
+- (NSURLSession *)_createBackgroundSession:(NSString * _Nonnull)uuid withDelegate:(id<NSURLSessionDelegate>)delegate withHeaders:(NSDictionary  * _Nullable )headers
+{
+  NSURLSessionConfiguration *sessionConfiguration = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:uuid];
+sessionConfiguration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+  if (headers != nil) {
+    sessionConfiguration.HTTPAdditionalHeaders = headers;
+  }
+  sessionConfiguration.URLCache = nil;
+  
+  return [NSURLSession sessionWithConfiguration:sessionConfiguration
+                                       delegate:delegate
+                                  delegateQueue:[NSOperationQueue mainQueue]];
+}
+
 - (BOOL)_checkIfFileExists:(NSString *)path
 {
   return [[NSFileManager defaultManager] fileExistsAtPath:path];
-}
-
-- (NSStringEncoding)_importBodyEncoding:(NSNumber *)encoding
-{
-  static NSDictionary *encodingMap = nil;
-  static dispatch_once_t onceToken;
-  dispatch_once(&onceToken, ^{
-    encodingMap = @{
-      @(1) : @(NSASCIIStringEncoding),
-      @(2) : @(NSNEXTSTEPStringEncoding),
-      @(3) : @(NSJapaneseEUCStringEncoding),
-      @(4) : @(NSISOLatin1StringEncoding),
-      @(5) : @(NSSymbolStringEncoding),
-      @(6) : @(NSNonLossyASCIIStringEncoding),
-      @(7) : @(NSShiftJISStringEncoding),
-      @(8) : @(NSISOLatin2StringEncoding),
-      @(9) : @(NSUnicodeStringEncoding),
-      @(10): @(NSWindowsCP1251StringEncoding),
-      @(11): @(NSWindowsCP1252StringEncoding),
-      @(12): @(NSWindowsCP1253StringEncoding),
-      @(13): @(NSWindowsCP1254StringEncoding),
-      @(14): @(NSWindowsCP1250StringEncoding),
-      @(15): @(NSISO2022JPStringEncoding),
-      @(16): @(NSMacOSRomanStringEncoding),
-      @(17): @(NSUTF16BigEndianStringEncoding),
-      @(18): @(NSUTF16LittleEndianStringEncoding),
-      @(19): @(NSUTF32StringEncoding),
-      @(20): @(NSUTF32BigEndianStringEncoding),
-      @(21): @(NSUTF32LittleEndianStringEncoding),
-    };
-  });
-  
-  return [encodingMap[encoding] integerValue] ?: NSUTF8StringEncoding;
 }
 
 - (NSMutableDictionary *)_parseServerResponse:(NSURLResponse *)response
@@ -762,18 +762,19 @@ UM_EXPORT_METHOD_AS(getTotalDiskCapacityAsync, getTotalDiskCapacityAsyncWithReso
   NSMutableDictionary *result = [NSMutableDictionary dictionary];
   result[@"status"] = @([httpResponse statusCode]);
   result[@"headers"] = [httpResponse allHeaderFields];
-  
+  result[@"MINEType"] = UMNullIfNil([httpResponse MIMEType]);
   return result;
 }
 
 - (NSURLSession *)_createSessionWithHeaders:(NSDictionary * _Nullable)headers
 {
-  NSURLSessionConfiguration *sessionConfiguration = [NSURLSessionConfiguration defaultSessionConfiguration];
+  NSURLSessionConfiguration *sessionConfiguration = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:[[NSUUID UUID] UUIDString]];
   sessionConfiguration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
   if (headers != nil) {
     sessionConfiguration.HTTPAdditionalHeaders = headers;
   }
   sessionConfiguration.URLCache = nil;
+  
   return [NSURLSession sessionWithConfiguration:sessionConfiguration];
 }
 
@@ -820,15 +821,12 @@ UM_EXPORT_METHOD_AS(getTotalDiskCapacityAsync, getTotalDiskCapacityAsyncWithReso
              nil);
       return;
     }
-    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    NSMutableDictionary *result = [self _parseServerResponse:task.response];
     result[@"uri"] = scopedLocation.absoluteString;
     result[@"complete"] = @(YES);
     if (options[@"md5"]) {
       result[@"md5"] = [data md5String];
     }
-    NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
-    result[@"status"] = @([httpResponse statusCode]);
-    result[@"headers"] = [httpResponse allHeaderFields];
     
     __strong EXFileSystem *strongSelf = weakSelf;
     if (strongSelf) {
