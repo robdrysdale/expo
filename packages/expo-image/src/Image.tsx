@@ -1,5 +1,12 @@
 import React from 'react';
-import { AccessibilityProps, ImageSourcePropType, ImageStyle, StyleProp } from 'react-native';
+import {
+  AccessibilityProps,
+  ImageResizeMode,
+  ImageSourcePropType,
+  ImageStyle,
+  StyleProp,
+  StyleSheet,
+} from 'react-native';
 
 import ExpoImage from './ExpoImage';
 
@@ -11,10 +18,16 @@ export interface ImageProps extends AccessibilityProps {
   // or not.
   source?: ImageSourcePropType | null;
   style?: StyleProp<ImageStyle>;
+  resizeMode?: ImageResizeMode;
 }
 
 export default class Image extends React.Component<ImageProps> {
   render() {
-    return <ExpoImage {...this.props} />;
+    const { style, resizeMode: resizeModeProp, ...restProps } = this.props;
+
+    const { resizeMode: resizeModeStyle, ...restStyle } = StyleSheet.flatten([style]) || {};
+    const resizeMode = resizeModeProp || resizeModeStyle || 'cover';
+
+    return <ExpoImage {...restProps} style={restStyle} resizeMode={resizeMode} />;
   }
 }
