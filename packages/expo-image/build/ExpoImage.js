@@ -1,8 +1,13 @@
 import React from 'react';
-import { Image, requireNativeComponent } from 'react-native';
+import { Image, requireNativeComponent, StyleSheet } from 'react-native';
 const NativeExpoImage = requireNativeComponent('ExpoImage');
-export default function ExpoImage({ source, ...props }) {
+export default function ExpoImage({ source, style, ...props }) {
     const resolvedSource = Image.resolveAssetSource(source ?? {});
-    return <NativeExpoImage {...props} source={resolvedSource}/>;
+    let resolvedStyle = style;
+    if (!Array.isArray(resolvedSource)) {
+        const { width, height } = resolvedSource;
+        resolvedStyle = StyleSheet.flatten([{ width, height }, style]);
+    }
+    return <NativeExpoImage {...props} source={resolvedSource} style={resolvedStyle}/>;
 }
 //# sourceMappingURL=ExpoImage.js.map
