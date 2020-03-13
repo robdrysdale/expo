@@ -8,6 +8,7 @@
 RCT_EXPORT_MODULE(ExpoImage)
 
 RCT_EXPORT_VIEW_PROPERTY(source, NSDictionary)
+RCT_EXPORT_VIEW_PROPERTY(resizeMode, RCTResizeMode)
 
 - (UIView *)view
 {
