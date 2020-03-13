@@ -4,6 +4,7 @@ import android.widget.ImageView;
 
 import com.bumptech.glide.Glide;
 import com.bumptech.glide.RequestManager;
+import com.bumptech.glide.request.RequestOptions;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.uimanager.SimpleViewManager;
@@ -17,6 +18,9 @@ public class ExpoImageManager extends SimpleViewManager<ImageView> {
   private static final String REACT_CLASS = "ExpoImage";
 
   private static final String SOURCE_URI_KEY = "uri";
+  private static final String SOURCE_WIDTH_KEY = "width";
+  private static final String SOURCE_HEIGHT_KEY = "height";
+  private static final String SOURCE_SCALE_KEY = "scale";
 
   private RequestManager mRequestManager;
 
@@ -40,9 +44,34 @@ public class ExpoImageManager extends SimpleViewManager<ImageView> {
       return;
     }
 
+    RequestOptions options = new RequestOptions();
+
+    // Override the size for local assets. This ensures that
+    // resizeMode "center" displays the image in the correct size.
+    if (sourceMap.hasKey(SOURCE_WIDTH_KEY) && sourceMap.hasKey(SOURCE_HEIGHT_KEY) && sourceMap.hasKey(SOURCE_SCALE_KEY)) {
+      double scale = sourceMap.getDouble(SOURCE_SCALE_KEY);
+      int width = sourceMap.getInt(SOURCE_WIDTH_KEY);
+      int height = sourceMap.getInt(SOURCE_HEIGHT_KEY);
+      options.override((int) (width * scale), (int) (height * scale));
+    }
+
+    options.fitCenter();
+
     mRequestManager
-        .load(sourceMap.getString(SOURCE_URI_KEY))
-        .into(view);
+      .load(sourceMap.getString(SOURCE_URI_KEY))
+      .apply(options)
+      .into(view);
+  }
+
+  @ReactProp(name = "resizeMode")
+  public void setResizeMode(ImageView view, String resizeMode) {
+    ImageView.ScaleType scaleType;
+    if (resizeMode.equals("repeat")) {
+      scaleType = ImageView.ScaleType.FIT_XY;
+    } else {
+      scaleType = ExpoImageTypes.getScaleType(resizeMode);
+    }
+    view.setScaleType(scaleType);
   }
 
   // View lifecycle
@@ -51,11 +80,7 @@ public class ExpoImageManager extends SimpleViewManager<ImageView> {
   @Override
   public ImageView createViewInstance(@NonNull ThemedReactContext context) {
     ImageView imageView = new ImageView(context);
-
-    // For now let's set scale type to FIT_XY
-    // to make behavior same on all platforms.
-    imageView.setScaleType(ImageView.ScaleType.FIT_XY);
-
+    imageView.setScaleType(ImageView.ScaleType.CENTER_CROP); // default = cover
     return imageView;
   }
 
